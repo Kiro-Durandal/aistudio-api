@@ -180,9 +180,9 @@ class RemoteProofSigner:
                         )
                     if resp.status_code != 200:
                         raise TransportError(
-                            f"Remote proof server returned HTTP {resp.status_code}: {err_msg}"
+                            f"本地签名服务返回 HTTP {resp.status_code}: {err_msg}"
                         )
-                    raise TransportError(f"Remote proof minting failed: {err_msg}")
+                    raise TransportError(f"本地签名失败: {err_msg}")
 
                 proof = str(data["proof"])
                 raw_headers = data.get("headers")
@@ -226,9 +226,7 @@ class RemoteProofSigner:
                 if attempt < max_attempts:
                     await asyncio.sleep(0.5)
 
-        raise TransportError(
-            f"Remote proof minting failed after {max_attempts} attempts: {last_error}"
-        )
+        raise TransportError(f"本地签名失败，已尝试 {max_attempts} 次: {last_error}")
 
 
 class WaaSigner:

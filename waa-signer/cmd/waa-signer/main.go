@@ -23,6 +23,7 @@ import (
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 	"github.com/Mag1cFall/AIStudio2API/internal/camoufoxnative"
+	"github.com/Mag1cFall/AIStudio2API/internal/netresolve"
 )
 
 const (
@@ -695,7 +696,33 @@ func main() {
 	stateDir := flag.String("state-dir", defaultStateDir, "Directory for worker fingerprints and interpreter cache")
 	locale := flag.String("locale", defaultLocale, "Browser profile locale")
 	timezone := flag.String("timezone", defaultTZ, "Browser profile IANA timezone")
+	dnsServer := flag.String("dns", os.Getenv("AISTUDIO_DNS_SERVER"), "DNS server IP or IP:port (default: Termux resolv.conf)")
+	checkDNS := flag.Bool("check-dns", false, "Resolve aistudio.google.com and exit without using cookies")
 	flag.Parse()
+
+	prefix := os.Getenv("PREFIX")
+	if os.Getenv("TERMUX_VERSION") == "" && !strings.Contains(prefix, "com.termux") {
+		prefix = ""
+	}
+	if source, err := netresolve.Configure(*dnsServer, prefix); err != nil {
+		slog.Error("DNS 配置失败", "error", err)
+		os.Exit(1)
+	} else if source != "" {
+		slog.Info("已配置签名器 DNS", "source", source)
+	} else if prefix != "" && *proxyURL == "" {
+		slog.Warn("未找到 Termux DNS 配置，请安装 resolv-conf 或设置 AISTUDIO_DNS_SERVER")
+	}
+	if *checkDNS {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		addresses, err := net.DefaultResolver.LookupHost(ctx, "aistudio.google.com")
+		if err != nil {
+			slog.Error("DNS 检查失败", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("DNS 检查成功", "addresses", addresses)
+		return
+	}
 
 	pool := NewWorkerPool(*stateDir, *proxyURL, *locale, *timezone)
 	defer pool.CloseAll()

@@ -60,6 +60,8 @@ build.bat
 | `-state-dir` | `WAA_STATE_DIR` | 系统临时目录下的 `aistudio_waa_workers` | Worker 指纹与解释器缓存目录 |
 | `-locale` | `WAA_LOCALE` | `en-US` | 浏览器环境语言 |
 | `-timezone` | `AISTUDIO_TIMEZONE` | `America/Los_Angeles` | 浏览器环境时区 |
+| `-dns` | `AISTUDIO_DNS_SERVER` | Termux 下读取 `$PREFIX/etc/resolv.conf`，其他平台使用系统配置 | DNS 服务器 IP 或 IP:端口；不自行添加公共 DNS |
+| `-check-dns` | — | `false` | 仅解析 `aistudio.google.com` 后退出，不使用 Cookie |
 
 ### 后台守护启动示例
 ```bash

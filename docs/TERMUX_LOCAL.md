@@ -10,7 +10,7 @@
 
 ```bash
 pkg update
-pkg install -y git python uv golang zig curl ca-certificates
+pkg install -y git python uv golang zig curl ca-certificates resolv-conf
 cd ~
 umask 077
 git clone https://github.com/Kiro-Durandal/aistudio-api.git aistudio-api-y700
@@ -98,6 +98,26 @@ curl --noproxy '*' -f http://127.0.0.1:8080/health
 ## 5. 网络与后台运行
 
 签名器和 Python 网关都必须能访问 Google。如果使用 VPN，请确认 Termux 流量包含在代理范围；如果使用显式 HTTP/SOCKS 代理，在 `.env` 的 `AISTUDIO_PROXY` 中填写实际可用的地址。该设置影响到 Google 的出口，Python 到本地签名器的请求始终不走代理。
+
+### 静态签名器的 DNS
+
+签名器编译为 Linux 静态程序，不能自动使用 Android 系统的 DNS 解析。该分支会读取 `$PREFIX/etc/resolv.conf` 中的 nameserver，不再依赖 Linux 的 `/etc/resolv.conf`。签名器不会自行选择额外的公共 DNS。
+
+`resolv-conf` 是 Termux 官方包；它在首次安装时提供 Google DNS 的默认配置（8.8.8.8 和 8.8.4.4）。已有配置请按自己的 VPN / 网络需要保留。也可在 `.env` 中设置 `AISTUDIO_DNS_SERVER=实际的DNS服务器IP`，支持 `IP:端口` 或 `[IPv6]:端口`。该设置只影响 Go 签名器的 DNS。
+
+若旧版本出现 `lookup ... on [::1]:53 ... connection refused`，停止网关后更新并重新编译：
+
+```bash
+pkg install -y resolv-conf
+git pull --ff-only
+GOMAXPROCS=2 GOFLAGS="-p=2" bash waa-signer/build.sh
+uv run --no-sync --env-file .env ./waa-signer/bin/waa-signer -check-dns
+uv run --no-sync python main.py server --port 8080
+```
+
+`-check-dns` 不读取 Cookie，不启动签名服务，只验证 Go 程序能否解析 `aistudio.google.com`；无法据此判断账号权限或模型可用性。若使用代理端口并由代理解析域名，DNS 检查仍是一次独立的本地 DNS 测试。修复 DNS 后若变为连接超时，继续检查 Termux 的 VPN 路由或显式代理配置。
+
+### 后台运行与进程排错
 
 可通过 Termux 通知中的 Acquire Wakelock 及 Android 的电池设置保持后台运行。初次排错先保持前台，停止服务用 Ctrl+C；本地签名器会随网关退出。
 

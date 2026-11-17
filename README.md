@@ -108,7 +108,7 @@
 ```bash
 # 步骤 1：更新 Termux 基础环境并安装 git
 pkg update -y
-pkg install -y git python uv golang zig curl ca-certificates
+pkg install -y git python uv golang zig curl ca-certificates resolv-conf
 
 # 步骤 2：克隆代码仓库并进入目录
 git clone https://github.com/Kiro-Durandal/aistudio-api.git
