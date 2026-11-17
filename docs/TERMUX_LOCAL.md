@@ -1,6 +1,6 @@
 # Y700 / Termux 本地签名部署
 
-本说明面向原生 Termux ARM64 环境。参考环境为 Android 16、Termux F-Droid 0.118.3、Python 3.14、Go 1.27、Zig 0.17 和 uv 0.13。它们是参考版本，本文尚未在实际 Y700 上完成编译或 Google 账号实测。
+本说明面向原生 Termux ARM64 环境。参考环境为 Android 16、Termux F-Droid 0.118.3、Python 3.14、Go 1.27、Zig 0.17 和 uv 0.13。用户已在该 Y700 环境确认依赖安装及签名器编译成功，运行与 Google 账号验证仍待实测。
 
 本分支只允许将签名请求发送到 `http://127.0.0.1:8081`，不继承签名客户端的环境代理，也不跟随 HTTP 跳转。本地签名不可用时停止启动。签名器仍需连接 Google 获取挑战，模型请求也仍发送给 Google。
 
@@ -77,8 +77,10 @@ PY
 ## 4. 启动与检查
 
 ```bash
-uv run --no-sync python main.py server --host 127.0.0.1 --port 8080
+uv run --no-sync python main.py server --port 8080
 ```
+
+监听地址由前面生成的 `.env` 中 `AISTUDIO_HOST=127.0.0.1` 设置；统一入口 `main.py server` 只接受 `--port`。
 
 保持这个终端运行，在 Termux 新建另一个会话检查：
 
