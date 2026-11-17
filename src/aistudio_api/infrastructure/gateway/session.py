@@ -74,7 +74,6 @@ class GatewaySession:
         server_url = str(active_waa.get("url") or settings.proof_server_url)
         self._signer = WaaSigner(
             proof_server_url=server_url,
-            proxy_url=settings.proxy_url,
         )
 
     @property

@@ -1,5 +1,7 @@
 # aistudio-api
 
+> **本地签名安全分支**：本仓库基于 DeconstructedCube/aistudio-api，仅允许向 `http://127.0.0.1:8081` 发送签名请求。缺少本地签名器或启动失败时直接停止，不回退到公共节点；网关默认只监听本机。Y700 / Termux 请优先阅读 [完整部署步骤](./docs/TERMUX_LOCAL.md)。
+
 <p align="center">
   <a href="https://github.com/DeconstructedCube/aistudio-api"><img src="https://img.shields.io/badge/API-Gemini%20v1beta-4285F4?style=flat-square&logo=google" alt="Gemini API"></a>
   <a href="https://hub.docker.com/r/bedrockblock/aistudio-api"><img src="https://img.shields.io/badge/Docker-bedrockblock%2Faistudio--api-2496ED?style=flat-square&logo=docker" alt="Docker Hub"></a>
@@ -15,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="./README_EN.md">English Documentation</a>
+  <a href="./README_EN.md">English Documentation (upstream reference; local-only changes are documented above)</a>
 </p>
 
 ---
@@ -54,7 +56,7 @@
 | **下游参数容错与丢弃** | 支持配置 `drop_unsupported_params` 自动过滤下游传入的非标准安全分类（如 `HARM_CATEGORY_CIVIC_INTEGRITY`）与不兼容工具，避免 400 阻断 |
 | **批量子账号探活** | 导入单个包含多个 Google 身份的 Cookie 后，自动探测子账号（`u/0`, `u/1`...）并分别建档 |
 | **内置搜索与工具** | 支持 Google Search 联网搜索、Google Maps、代码执行沙箱、URL 上下文提取等官方扩展能力 |
-| **双轨签名与特征对齐** | 脱离重型浏览器，支持本地 Go 签名服务 (SpiderMonkey 152) 与远程 NodeVM 签名节点，自动绑定匹配的 User-Agent 与请求头特征，并支持 5 级 403 自愈重试 |
+| **本地签名与特征对齐** | 本地 Go 签名服务 (SpiderMonkey 152)，签名链路拒绝远程地址、HTTP 跳转及环境代理；自动绑定匹配的 User-Agent 与请求头特征 |
 | **Web 管理面板** | 提供 Web 管理控制台，支持账号分组与预设方案、文本/JSON 批量导入、调用量监控、WAA 节点切换、日志转储控制及在线热重载 `config.yaml` |
 > [!NOTE]
 > **内存占用参考**：脱离重型浏览器后，服务常驻物理内存仅约 35 - 50 MB，冷启动毫秒级，即使在入门级 Android 手机（Termux）或轻量服务器上亦可稳定高效常驻。
@@ -73,7 +75,7 @@
 └───────────────────────────┼────────────────────────────┘
                             │ Proof Mint & HTTP/2 Stream
 ┌───────────────────────────▼────────────────────────────┐
-│       Browserless WAA Engine (waa-signer / Remote NodeVM)     │
+│       Local WAA Engine (waa-signer / SpiderMonkey)       │
 │       Async Connection Pooling (HTTPStreamTransport)   │
 └───────────────────────────┬────────────────────────────┘
                             │ HTTPS / RPC
@@ -95,39 +97,43 @@
 ## 快速开始
 
 > [!NOTE]
-> **开箱即用提示**：服务默认内置远程 WAA 证明签名节点，无需额外编译，安装依赖后**直接启动即可开箱即用**！若追求极致的毫秒级本地性能与离线化运行，可在运行后随时按需编译本地原生引擎（各平台步骤见下方进阶可选说明）。
+> **启动前必须编译本地签名器**：本分支不支持公共签名节点。需要 Go 1.27+ 和 Zig，编译成功后再启动服务。首次使用前请按照 [Termux 本地部署说明](./docs/TERMUX_LOCAL.md) 设置独立管理密码和 API Key。
 ### Android (Termux)
 
 > [!TIP]
-> **下载提示**：请务必从 [F-Droid](https://f-droid.org/packages/com.termux/) 或 [GitHub Releases](https://github.com/termux/termux-app/releases) 安装 Termux。**切勿使用 Google Play 商店版本**（Play 商店版本已停止维护，更新环境会报错）。
+> **下载提示**：本教程使用 [F-Droid](https://f-droid.org/packages/com.termux/) 或 [GitHub Releases](https://github.com/termux/termux-app/releases) 的 Termux。Google Play 的独立分支不在本教程验证范围内。
 
 打开 Termux，依次复制执行以下命令：
 
 ```bash
 # 步骤 1：更新 Termux 基础环境并安装 git
-pkg update -y && pkg install -y git
+pkg update -y
+pkg install -y git python uv golang zig curl ca-certificates
 
 # 步骤 2：克隆代码仓库并进入目录
-git clone https://github.com/DeconstructedCube/aistudio-api.git
+git clone https://github.com/Kiro-Durandal/aistudio-api.git
 cd aistudio-api
 
 # 步骤 3：初始化依赖环境并同步安装
 bash scripts/setup-env.sh
-uv sync
+uv sync --python "$PREFIX/bin/python" --no-dev
 
-# 步骤 4：直接启动服务（开箱即用）
+# 步骤 4：编译本地签名器
+bash waa-signer/build.sh
+
+# 步骤 5：按 docs/TERMUX_LOCAL.md 初始化本地密码和 API Key 后启动
 uv run python main.py server --port 8080
 ```
 
 <details>
-<summary><b>【进阶可选】编译本地原生高性能签名服务 (waa-signer)</b></summary>
+<summary><b>本地签名构建与验证 (waa-signer)</b></summary>
 
 若需脱离外部网络节点、获得 10~30 毫秒本地极速签名体验：
 ```bash
 pkg install -y golang zig
 bash waa-signer/build.sh
 ```
-编译完成后重启服务，系统将自动识别并切换至本地原生引擎。
+编译完成后启动服务；本地进程未就绪时会停止启动。访问 `http://127.0.0.1:8081/health` 可检查进程状态。
 </details>
 
 启动成功后：
@@ -147,23 +153,24 @@ bash waa-signer/build.sh
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 
 # 步骤 2：克隆代码仓库并进入目录
-git clone https://github.com/DeconstructedCube/aistudio-api.git
+git clone https://github.com/Kiro-Durandal/aistudio-api.git
 cd aistudio-api
 
 # 步骤 3：同步安装项目依赖（uv 会自动安装所需 Python 环境）
 uv sync
 
-# 步骤 4：直接启动服务（开箱即用）
+# 步骤 4：先按下方说明编译本地签名器，再启动服务
 uv run python main.py server --port 8080
 ```
 
 <details>
-<summary><b>【进阶可选】一键编译本地高性能签名服务 (waa-signer.exe)</b></summary>
+<summary><b>启动前必须编译本地签名服务 (waa-signer.exe)</b></summary>
 
 若需启用毫秒级本地原生签名引擎：
 ```powershell
 # 推荐安装编译器（脚本亦支持自动检测与提示安装）：
-winget install GoLang.Go zig.zig
+winget install GoLang.Go
+winget install zig.zig
 
 # 执行一键构建脚本
 .\waa-signer\build.bat
@@ -184,20 +191,21 @@ winget install GoLang.Go zig.zig
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # 步骤 2：克隆代码仓库并进入目录
-git clone https://github.com/DeconstructedCube/aistudio-api.git
+git clone https://github.com/Kiro-Durandal/aistudio-api.git
 cd aistudio-api
 
 # 步骤 3：同步安装项目依赖
 uv sync
 
-# 步骤 4：直接启动服务（开箱即用）
+# 步骤 4：先编译本地签名器，再启动服务
+bash waa-signer/build.sh
 uv run python3 main.py server --port 8080
 ```
 
 <details>
-<summary><b>【进阶可选】编译本地高性能签名服务</b></summary>
+<summary><b>本地签名构建依赖</b></summary>
 
-前置要求：已安装 Go 1.22+ 与 zig（或 clang / gcc）：
+前置要求：已安装 Go 1.27+ 与 zig（或 clang / gcc）：
 ```bash
 bash waa-signer/build.sh
 ```
@@ -211,13 +219,16 @@ bash waa-signer/build.sh
 > [!NOTE]
 > 本项目 `Dockerfile` 采用多阶段构建，在镜像构建时会**全自动下载依赖并编译** `waa-signer` 二进制服务内置于容器内，容器启动时自动拉起本地原生签名引擎，开箱即用，无需手动构建。
 
+请从本分支源码构建镜像，不使用上游的预编译镜像：
+
 ```bash
+docker build -t aistudio-api-local .
 docker run -d \
   --name aistudio-api \
   --restart unless-stopped \
-  -p 8080:8080 \
+  -p 127.0.0.1:8080:8080 \
   -v aistudio-api-data:/app/data \
-  ghcr.io/deconstructedcube/aistudio-api:latest
+  aistudio-api-local
 ```
 使用 Docker Compose 启动：
 
@@ -270,6 +281,7 @@ docker compose up -d
 
 | 变量名 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
+| `AISTUDIO_HOST` | string | `127.0.0.1` | 默认仅本机访问；容器内部由 Dockerfile 显式设置为 `0.0.0.0` |
 | `AISTUDIO_PORT` | int | `8080` | API 服务监听端口 |
 | `AISTUDIO_WEB_PASSWORD` | string | `""` | Web 控制台访问密码（亦可设置 `AISTUDIO_ADMIN_PASSWORD`） |
 | `AISTUDIO_PROXY` | string | `""` | 出口代理地址，支持 `http://`、`https://` 或 `socks5://` |
@@ -280,7 +292,7 @@ docker compose up -d
 | `AISTUDIO_CONFIG_FILE` | string | `config.yaml` | 模型规则与默认工具配置文件路径 |
 | `AISTUDIO_PERSIST_STATS` | bool | `true` | 是否持久化模型调用与 Token 统计（1=开启，0=关闭） |
 | `AISTUDIO_PERSIST_ROTATOR` | bool | `true` | 是否持久化账号 429 冷却与调度状态（1=开启，0=关闭） |
-| `AISTUDIO_PROOF_SERVER_URL` | string | `https://waa.spinsnow.fun` | 签名服务兜底地址；默认优先使用 `config.yaml` 中 `waa.active_server` 指定的节点及其绑定的特征 User-Agent（无本地二进制时自动切换为 `remote_spinsnow`） |
+| `AISTUDIO_PROOF_SERVER_URL` | string | `http://127.0.0.1:8081` | 仅允许此本地地址；远程配置或本地进程不可用时直接报错 |
 | `AISTUDIO_DEFAULT_TEXT_MODEL` | string | `gemini-3.7-flash` | 默认文本模型 |
 | `AISTUDIO_TIMEZONE` | string | 自动探测 | Wire 协议交互时区（默认 `America/Los_Angeles`） |
 | `AISTUDIO_DUMP_REQUESTS` | bool | `false` | 是否在终端转储每次 API 交互报文详情（支持 `DEBUG=1` 触发） |

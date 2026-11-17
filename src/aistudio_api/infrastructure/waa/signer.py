@@ -1,9 +1,4 @@
-"""WAA proof signing client powered by aistudio-pg-bridge.
-
-Connects to Lianues/aistudio-pg-bridge (https://github.com/Lianues/aistudio-pg-bridge)
-or compatible WAA proof servers (e.g. https://waa.spinsnow.fun) to mint proof tokens
-without local browser or heavy JavaScript runtime dependencies.
-"""
+"""WAA proof client restricted to the local waa-signer process."""
 
 from __future__ import annotations
 
@@ -34,7 +29,14 @@ from aistudio_api.infrastructure.utils.logger import get_logger
 
 logger = get_logger("waa.signer")
 
-DEFAULT_PROOF_SERVER_URL = "https://waa.spinsnow.fun"
+DEFAULT_PROOF_SERVER_URL = "http://127.0.0.1:8081"
+
+
+def require_local_proof_server(url: str) -> str:
+    """Reject remote hosts, alternate ports, URL credentials and proxy tricks."""
+    if url.rstrip("/") != DEFAULT_PROOF_SERVER_URL:
+        raise TransportError("此分支只允许本地签名服务 http://127.0.0.1:8081")
+    return DEFAULT_PROOF_SERVER_URL
 
 
 def extract_content_digest(contents: list[AistudioContent]) -> tuple[str, str]:
@@ -71,16 +73,14 @@ def extract_content_digest(contents: list[AistudioContent]) -> tuple[str, str]:
 
 
 class RemoteProofSigner:
-    """Signs requests using external WAA proof server (aistudio-pg-bridge / spinsnow)."""
+    """Call the proof HTTP API on the local machine only."""
 
     def __init__(
         self,
         server_url: str = DEFAULT_PROOF_SERVER_URL,
-        proxy_url: str | None = None,
         timeout: float = 30.0,
     ) -> None:
         self.server_url = server_url.rstrip("/")
-        self.proxy_url = proxy_url
         self.timeout = timeout
         self.last_headers: dict[str, str] = {}
         self.last_pool_state: str = ""
@@ -88,16 +88,12 @@ class RemoteProofSigner:
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or lazily initialize shared HTTP client with connection pooling."""
+        require_local_proof_server(self.server_url)
         if self._client is None or self._client.is_closed:
-            is_local = (
-                "127.0.0.1" in self.server_url
-                or "localhost" in self.server_url
-                or "::1" in self.server_url
-            )
-            effective_proxy = None if is_local else self.proxy_url
             self._client = httpx.AsyncClient(
                 timeout=self.timeout,
-                proxy=effective_proxy,
+                trust_env=False,
+                follow_redirects=False,
                 limits=httpx.Limits(max_keepalive_connections=20, max_connections=50),
             )
         return self._client
@@ -119,7 +115,8 @@ class RemoteProofSigner:
         wire_contents: list[Any] | None = None,
         force_recreate: bool = False,
     ) -> str:
-        """Request proof from remote proof server with automatic retry on transient failure."""
+        """Request local proof, rejecting unsafe targets before handling credentials."""
+        server_url = require_local_proof_server(self.server_url)
         min_cookies = filter_minimal_cookies(cookies)
         cookie_header = "; ".join(f"{k}={v}" for k, v in min_cookies.items())
         if not cookie_header:
@@ -147,7 +144,7 @@ class RemoteProofSigner:
                 t0 = time.perf_counter()
                 client = await self._get_client()
                 resp = await client.post(
-                    f"{self.server_url}/v1/proof/mint",
+                    f"{server_url}/v1/proof/mint",
                     json=payload,
                     headers={"Content-Type": "application/json"},
                 )
@@ -240,10 +237,9 @@ class WaaSigner:
     def __init__(
         self,
         proof_server_url: str | None = None,
-        proxy_url: str | None = None,
     ) -> None:
         url = proof_server_url or DEFAULT_PROOF_SERVER_URL
-        self._remote_signer = RemoteProofSigner(server_url=url, proxy_url=proxy_url)
+        self._remote_signer = RemoteProofSigner(server_url=url)
 
     async def close(self) -> None:
         """Close underlying remote signer resources."""

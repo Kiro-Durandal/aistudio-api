@@ -75,13 +75,10 @@ if [ ! -f "$DEPS_DIR/lib/libjs_static.a" ]; then
     fi
   done
 
-  # 2. 多源镜像重试下载
+  # 2. 仅从依赖发布者的 GitHub Release 下载，不回退到第三方镜像
   if [ "$HAS_LOCAL" -ne 1 ]; then
     DOWNLOAD_URLS=(
       "$OFFICIAL_URL"
-      "https://ghproxy.net/${OFFICIAL_URL}"
-      "https://gh-proxy.com/${OFFICIAL_URL}"
-      "https://mirror.ghproxy.com/${OFFICIAL_URL}"
     )
     DOWNLOAD_SUCCESS=0
     for URL in "${DOWNLOAD_URLS[@]}"; do

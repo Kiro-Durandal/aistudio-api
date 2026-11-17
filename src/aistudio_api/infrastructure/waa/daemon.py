@@ -21,9 +21,9 @@ from pathlib import Path
 
 from aistudio_api.infrastructure.gateway.model_defaults import (
     get_active_waa_server,
-    switch_active_waa_server,
 )
 from aistudio_api.infrastructure.utils.logger import get_logger
+from aistudio_api.infrastructure.waa.signer import require_local_proof_server
 
 logger = get_logger("waa.daemon")
 
@@ -98,24 +98,14 @@ def is_service_healthy(url: str) -> bool:
 
 
 def ensure_signer_ready() -> None:
-    """检查本地 WAA 签名服务状态，未运行时自动拉起或切换至远程节点。"""
+    """检查并拉起本地签名器；配置错误或启动失败时拒绝启动网关。"""
     global _daemon_proc
     active_waa = get_active_waa_server()
-    url = str(active_waa.get("url") or "")
+    require_local_proof_server(str(active_waa.get("url") or ""))
 
     root_dir = _repo_root()
     bin_name = "waa-signer.exe" if sys.platform == "win32" else "waa-signer"
     bin_path = root_dir / "waa-signer" / "bin" / bin_name
-
-    is_local_8081 = "127.0.0.1:8081" in url or "localhost:8081" in url
-    if not is_local_8081:
-        if bin_path.is_file():
-            logger.info(
-                "检测到本地 WAA 签名服务已就绪 (%s)。当前配置为远程节点 [%s]，如需启用本地原生引擎可在 Web 控制台或 config.yaml 中切换为 local_spidermonkey",
-                bin_path.name,
-                active_waa.get("id", "remote"),
-            )
-        return
 
     # 1. 检查本地 8081 是否已有健康实例在运行
     if is_service_healthy("http://127.0.0.1:8081"):
@@ -165,21 +155,16 @@ def ensure_signer_ready() -> None:
         except Exception as e:
             logger.warning("启动本地 WAA 签名服务失败: %s", e)
 
-    # 3. 若无本地二进制或拉起失败，回退到远程签名节点并给予明确操作引导
+    # 本地不可用时停止，绝不把 Cookie 或对话转交公共签名节点。
     build_cmd = (
         ".\\waa-signer\\build.bat (或 .\\waa-signer\\build.ps1)"
         if sys.platform == "win32"
         else "bash waa-signer/build.sh"
     )
-    logger.warning(
-        "未检测到本地 WAA 签名服务二进制产物: %s\n"
-        "  ==> 当前已自动降级回退至远程签名节点 (remote_spinsnow)。\n"
-        "  ==> 如需获得毫秒级本地原生性能并彻底脱离外部依赖，请运行构建脚本:\n"
-        "      %s",
-        bin_path,
-        build_cmd,
+    raise RuntimeError(
+        f"本地签名服务不可用，已禁止远程回退。请先执行 {build_cmd}，"
+        f"并检查 {bin_path} 或手动启动签名器查看错误。"
     )
-    switch_active_waa_server("remote_spinsnow")
 
 
 def stop_signer_daemon() -> None:

@@ -641,6 +641,7 @@ def main():
     from aistudio_api.config import settings
 
     parser = argparse.ArgumentParser(description="AI Studio API Server")
+    parser.add_argument("--host", default=settings.host)
     parser.add_argument("--port", type=int, default=settings.port)
     args = parser.parse_args()
 
@@ -649,7 +650,7 @@ def main():
     logger.info("启动服务: 监听端口=%d, 日志级别=%s", args.port, get_log_level())
     uvicorn.run(
         app,
-        host="0.0.0.0",
+        host=args.host,
         port=args.port,
         log_level=get_log_level().lower(),
         log_config=None,

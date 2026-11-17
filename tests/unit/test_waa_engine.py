@@ -1,4 +1,4 @@
-"""Unit tests for WAA engine proof signing client (aistudio-pg-bridge / spinsnow)."""
+"""Unit tests for the local WAA proof HTTP client."""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ async def test_remote_proof_signer_success():
         )
 
     mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    signer = RemoteProofSigner(server_url="https://mock.proof.server")
+    signer = RemoteProofSigner()
 
     with patch("httpx.AsyncClient", return_value=mock_client):
         proof = await signer.mint_proof(
@@ -76,7 +76,7 @@ async def test_remote_proof_signer_error():
         )
 
     mock_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    signer = RemoteProofSigner(server_url="https://mock.proof.server")
+    signer = RemoteProofSigner()
 
     with (
         patch("httpx.AsyncClient", return_value=mock_client),
@@ -105,7 +105,7 @@ async def test_remote_proof_signer_retry_on_network_error():
             json={"ok": True, "proof": "!mock_recovered_proof", "poolState": "cold"},
         )
 
-    signer = RemoteProofSigner(server_url="https://mock.proof.server")
+    signer = RemoteProofSigner()
 
     orig_client = httpx.AsyncClient
     with patch(
@@ -125,7 +125,7 @@ async def test_remote_proof_signer_retry_on_network_error():
 @pytest.mark.asyncio
 async def test_waa_signer_facade():
     """Verify WaaSigner delegates generate_snapshot to RemoteProofSigner."""
-    signer = WaaSigner(proof_server_url="https://mock.proof.server")
+    signer = WaaSigner()
 
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"ok": True, "proof": "!facade_token"})

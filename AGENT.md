@@ -19,7 +19,7 @@
 `aistudio-api` 是 Google AI Studio 反向代理网关，提供原生 **Gemini API 兼容接口**（`/v1beta/...`）。
 
 - **Gemini 协议实现**：实现 Gemini 官方 `/v1beta/...` 接口规范（包含 thinking、multimodal、image-generation、function calling 等），不引入其他厂商的协议转译层。
-- **无浏览器 WAA 签名架构**：通过独立 `waa-signer`（嵌入式 SpiderMonkey 152 + Firefox 152 DOM 宿主）或兼容的远程证明签名服务生成 `!proof` 令牌，配合 `httpx` HTTP/2 异步连接池直连 Google AI Studio。
+- **仅限本地 WAA 签名**：通过本机 `http://127.0.0.1:8081` 的独立 `waa-signer`（嵌入式 SpiderMonkey 152 + Firefox 152 DOM 宿主）生成 `!proof` 令牌。签名客户端禁止远程地址、重定向和环境代理；本地服务不可用时拒绝启动，不添加远程回退。Google 出口仍由 `AISTUDIO_PROXY` 配置。
 - **代码即事实标准（Code as Ground Truth）**：以通过测试验证的代码为准。当文档与代码逻辑不一致时，以代码为准并同步更新文档。
 - **接口契约优先（Contract over Brittle Mocks）**：测试应对齐公共接口契约，避免耦合私有属性。
 - **协议索引常量化（No Magic Numbers）**：Protobuf-over-JSON 数组下标统一定义为 `wire_spec.py` 中的具名常量或枚举。
@@ -35,7 +35,10 @@ Python 工具链直接运行在 Termux 宿主（通过 `uv` 管理虚拟环境�
 bash scripts/setup-env.sh
 uv sync
 
-# 2. 启动服务
+# 2. 编译本地签名器（Go 1.27+、Zig）
+bash waa-signer/build.sh
+
+# 3. 启动服务（默认只监听本机）
 uv run python3 main.py server --port 8080
 ```
 
