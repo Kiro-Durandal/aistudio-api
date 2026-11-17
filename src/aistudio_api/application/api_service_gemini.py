@@ -1061,8 +1061,7 @@ def format_sse_event(
             for part in to_gemini_parts("", reasoning_images=r_img_list)
         ]
     elif event_type == "thought_signature":
-        # Empty text gives strict clients a part type without losing metadata.
-        parts = [{"text": "", "thoughtSignature": str(text)}]
+        parts = [{"thoughtSignature": str(text)}]
     else:
         return None
 
@@ -1076,7 +1075,7 @@ def format_sse_event(
             parts[0]["thoughtSignature"] = thought_signature
         elif existing_signature != thought_signature:
             # 独立签名不能覆盖工具或图片自己的签名，按原顺序保留独立 Part。
-            parts.insert(0, {"text": "", "thoughtSignature": thought_signature})
+            parts.insert(0, {"thoughtSignature": thought_signature})
     payload: dict[str, object] = {
         "candidates": [{"content": {"role": "model", "parts": parts}, "index": 0}]
     }

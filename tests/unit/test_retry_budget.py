@@ -396,14 +396,6 @@ async def test_auth_replay_uses_current_account_binding(
             ],
             ["pending"],
         ),
-        (
-            [("body", "synthetic_ok"), ("thought_signature", "tail")],
-            ["tail"],
-        ),
-        (
-            [("thought_signature", "metadata_only")],
-            ["metadata_only"],
-        ),
     ],
 )
 async def test_stream_preserves_independent_and_call_signatures(
@@ -428,15 +420,6 @@ async def test_stream_preserves_independent_and_call_signatures(
     assert [
         part["thoughtSignature"] for part in parts if part.get("thoughtSignature")
     ] == expected_signatures
-    # Strict Gemini clients dispatch by content type; metadata alone must not
-    # reach them as an unrecognised part. Function calls keep their own type.
-    assert all(
-        any(
-            key in part
-            for key in ("text", "functionCall", "functionResponse", "inlineData")
-        )
-        for part in parts
-    )
     call_ids = [
         part["functionCall"]["id"] for part in parts if part.get("functionCall")
     ]
@@ -460,7 +443,7 @@ async def test_emitted_signature_prevents_transport_replay(request_runtime):
     payloads = await _invoke(request_runtime, stream=True)
     assert isinstance(payloads, list)
     assert payloads[0]["candidates"][0]["content"]["parts"] == [
-        {"text": "", "thoughtSignature": "first"}
+        {"thoughtSignature": "first"}
     ]
     assert payloads[-1]["error"]["code"] == 502
     assert request_runtime.client.stream_generate_content.call_count == 1

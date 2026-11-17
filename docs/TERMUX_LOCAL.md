@@ -119,10 +119,6 @@ uv run --no-sync python main.py server --port 8080
 
 ### 后台运行与进程排错
 
-若客户端报 `unknown message part type`，并显示只含 `thoughtSignature` 的片段，这是响应解析兼容问题。该分支为独立签名片段补充空的 `text` 字段，保留签名原值与独立 Part 顺序。工具调用自己的签名保持在对应的 `functionCall` Part 上。
-
-此修正只涉及 Python 网关，停止网关后执行 `git pull --ff-only`，再用原来的端口重新启动即可，无需重新编译签名器。账号验证、DNS 检查和此类响应解析错误分别按实际错误信息排查。
-
 可通过 Termux 通知中的 Acquire Wakelock 及 Android 的电池设置保持后台运行。初次排错先保持前台，停止服务用 Ctrl+C；本地签名器会随网关退出。
 
 如果提示“本地签名服务不可用”，可单独执行下面命令查看签名器输出，再在另一个会话启动网关：
