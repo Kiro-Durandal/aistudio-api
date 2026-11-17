@@ -91,6 +91,7 @@ def test_generated_standalone_signature_survives_next_turn(
     wire_contents = _replay_model_turn(returned_parts)
     model_wire, role = wire_contents[1]
 
+    assert returned_parts[-1] == {"text": "", "thoughtSignature": TRAILING_SIGNATURE}
     assert role == "model"
     assert len(model_wire) == len(returned_parts)
     trailing = parse_response_part(model_wire[-1])
@@ -165,16 +166,21 @@ def test_parallel_function_calls_keep_ids_signatures_and_matching_results() -> N
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("with_function_call", [False, True])
 async def test_streaming_tool_and_tail_signature_survive_full_history(
     monkeypatch: pytest.MonkeyPatch,
+    with_function_call: bool,
 ) -> None:
     # 沿用真实 AI Studio 函数调用报文形状，经过网关解析和公开 SSE 路由。
     raw_call: list[object] = [None] * (PartIndex.THOUGHT_SIGNATURE + 1)
-    raw_call[PartIndex.FUNCTION_CALL_ALT] = [
-        "getWeather",
-        [[["city", [None, None, "Shanghai"]]]],
-        "e6ni61kr",
-    ]
+    if with_function_call:
+        raw_call[PartIndex.FUNCTION_CALL_ALT] = [
+            "getWeather",
+            [[["city", [None, None, "Shanghai"]]]],
+            "e6ni61kr",
+        ]
+    else:
+        raw_call[PartIndex.TEXT] = "OK"
     raw_call[PartIndex.THOUGHT_SIGNATURE] = CALL_SIGNATURE
     raw_tail: list[object] = [None] * (PartIndex.THOUGHT_SIGNATURE + 1)
     raw_tail[PartIndex.THOUGHT_SIGNATURE] = TRAILING_SIGNATURE
@@ -221,18 +227,25 @@ async def test_streaming_tool_and_tail_signature_survive_full_history(
         for candidate in payload.get("candidates", []):
             returned_parts.extend(candidate.get("content", {}).get("parts", []))
     assert len(returned_parts) == 2
-    returned_call = returned_parts[0]["functionCall"]
-    assert isinstance(returned_call, dict)
-    assert returned_call["id"] == "e6ni61kr"
+    if with_function_call:
+        returned_call = returned_parts[0]["functionCall"]
+        assert isinstance(returned_call, dict)
+        assert returned_call["id"] == "e6ni61kr"
+    else:
+        assert returned_parts[0]["text"] == "OK"
     assert returned_parts[0]["thoughtSignature"] == CALL_SIGNATURE
-    assert returned_parts[1] == {"thoughtSignature": TRAILING_SIGNATURE}
+    assert returned_parts[1] == {"text": "", "thoughtSignature": TRAILING_SIGNATURE}
 
     model_wire, role = _replay_model_turn(returned_parts)[1]
     assert role == "model"
     assert len(model_wire) == len(returned_parts)
     call = parse_response_part(model_wire[0])
-    assert call.function_call is not None
-    assert call.function_call["args"] == {"city": "Shanghai"}
-    assert call.function_call["call_id"] == "e6ni61kr"
+    if with_function_call:
+        assert call.function_call is not None
+        assert call.function_call["args"] == {"city": "Shanghai"}
+        assert call.function_call["call_id"] == "e6ni61kr"
+    else:
+        assert call.text == "OK"
+        assert call.function_call is None
     assert call.thought_signature == CALL_SIGNATURE
     assert parse_response_part(model_wire[1]).thought_signature == TRAILING_SIGNATURE

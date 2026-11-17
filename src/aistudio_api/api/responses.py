@@ -147,7 +147,7 @@ def to_gemini_parts(
             resp_payload.id = str(fr_id)
         parts.append(GeminiPartResponse(functionResponse=resp_payload))
     if standalone_signature and standalone_signature != effective_text_sig:
-        parts.append(GeminiPartResponse(thoughtSignature=standalone_signature))
+        parts.append(GeminiPartResponse(text="", thoughtSignature=standalone_signature))
     if not parts:
         parts.append(GeminiPartResponse(text=""))
     return parts
