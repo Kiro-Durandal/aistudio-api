@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -532,5 +533,175 @@ func TestWorkerPoolExternalSIDCCRotationRemainsHot(t *testing.T) {
 	}
 	if factory.calls() != 1 || worker.closeCount() != 0 {
 		t.Fatal("SIDCC rotation recreated or closed the hot worker")
+	}
+}
+
+func TestServeIPCHealthMintLargePayloadAndEOFShutdown(t *testing.T) {
+	pool, factory := newOfflinePool()
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- serveIPC(context.Background(), inR, outW, pool)
+		_ = outW.Close()
+	}()
+
+	scanner := bufio.NewReader(outR)
+	readResp := func() ipcResponse {
+		t.Helper()
+		line, err := scanner.ReadBytes('\n')
+		if err != nil {
+			t.Fatalf("read IPC line: %v", err)
+		}
+		var resp ipcResponse
+		if err := json.Unmarshal(line, &resp); err != nil {
+			t.Fatalf("decode IPC response: %v", err)
+		}
+		return resp
+	}
+
+	ready := readResp()
+	if !ready.OK || ready.Event != "ready" || ready.Engine != "spidermonkey-152" {
+		t.Fatalf("unexpected ready banner: %+v", ready)
+	}
+
+	writeReq := func(req any) {
+		t.Helper()
+		b, err := json.Marshal(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := inW.Write(append(b, '\n')); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Large prompt >128KB verifies no 64KB scanner truncation
+	largePrompt := strings.Repeat("A", 140*1024)
+	writeReq(map[string]any{
+		"id":     1,
+		"method": "proof.mint",
+		"params": map[string]any{
+			"cookies":  offlineCookies,
+			"authUser": 0,
+			"g1Tier":   "TIER1",
+			"model":    "models/gemini-3.7-flash",
+			"prompt":   largePrompt,
+		},
+	})
+	mintResp := readResp()
+	if mintResp.ID != 1 || !mintResp.OK || mintResp.Proof != "offline-proof" || mintResp.PoolState != "cold" {
+		t.Fatalf("unexpected mint response: %+v", mintResp)
+	}
+	if mintResp.Headers["X-AIStudio-G1-Tier"] != "TIER1" {
+		t.Fatalf("missing tier header: %+v", mintResp.Headers)
+	}
+
+	writeReq(map[string]any{"id": 2, "method": "health"})
+	healthResp := readResp()
+	if healthResp.ID != 2 || !healthResp.OK || healthResp.Workers != 1 {
+		t.Fatalf("unexpected health response: %+v", healthResp)
+	}
+
+	// Closing stdin simulates parent crash/exit -> must close workers and exit cleanly
+	_ = inW.Close()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("serveIPC returned error on EOF: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("serveIPC did not exit after stdin EOF")
+	}
+	if factory.calls() != 1 || pool.ActiveCount() != 0 {
+		t.Fatalf("expected clean worker shutdown after EOF, active=%d", pool.ActiveCount())
+	}
+}
+
+type cancellableProofWorker struct {
+	fakePoolWorker
+	entered chan struct{}
+}
+
+func (worker *cancellableProofWorker) ProofByDigest(ctx context.Context, _, _ string) (string, http.Header, error) {
+	close(worker.entered)
+	<-ctx.Done()
+	return "", nil, ctx.Err()
+}
+
+func TestServeIPCEOFImmediatelyCancelsInFlightProof(t *testing.T) {
+	pool, _ := newOfflinePool()
+	entered := make(chan struct{})
+	pool.factory = func(_ context.Context, _ string, _ camoufoxnative.Options, state aistudio.StorageState) (poolWorker, error) {
+		return &cancellableProofWorker{
+			fakePoolWorker: fakePoolWorker{storage: state, phase: aistudio.WorkerReady},
+			entered:        entered,
+		}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	reader, writer := io.Pipe()
+	t.Cleanup(func() { _ = writer.Close() })
+	finished := make(chan error, 1)
+	go func() { finished <- serveIPC(ctx, reader, io.Discard, pool) }()
+	request := map[string]any{
+		"id": 1, "method": "proof.mint",
+		"params": map[string]any{"cookies": offlineCookies, "prompt": "fixture"},
+	}
+	if err := json.NewEncoder(writer).Encode(request); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("proof request did not start")
+	}
+	_ = writer.Close()
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stdin EOF failed to cancel in-flight proof before waiting")
+	}
+	if pool.ActiveCount() != 0 {
+		t.Fatal("workers remained active after EOF shutdown")
+	}
+}
+
+type blockedIPCReader struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (reader blockedIPCReader) Read(_ []byte) (int, error) {
+	close(reader.entered)
+	<-reader.release
+	return 0, io.EOF
+}
+
+func TestServeIPCCancelInterruptsUnclosableInput(t *testing.T) {
+	pool, _ := newOfflinePool()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	reader := blockedIPCReader{entered: make(chan struct{}), release: make(chan struct{})}
+	t.Cleanup(func() { close(reader.release) })
+	finished := make(chan error, 1)
+	go func() { finished <- serveIPC(ctx, reader, io.Discard, pool) }()
+	select {
+	case <-reader.entered:
+	case <-time.After(time.Second):
+		t.Fatal("IPC input read did not start")
+	}
+	cancel()
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("context cancellation did not interrupt idle IPC input")
 	}
 }

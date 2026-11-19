@@ -1,0 +1,7 @@
+# GitHub Release asset digests, Mag1cFall/firefox v152.0.4-aistudio2api.1.
+# Pinning detects altered downloads; it does not audit the publisher's binaries.
+8063d69f56711c72b1244c8415b6c5096aa64ae8b022f555722667531acfe659  spidermonkey-v152.0.4-aistudio2api.1-darwin-amd64.tar.gz
+19f690d52ce2cfe7dbaedcc9771976145fff0dbd81f24e89a2dd094a1424b673  spidermonkey-v152.0.4-aistudio2api.1-darwin-arm64.tar.gz
+d3ecebf1890355426ad261ab8723038849a524b348af53e1bb440ca53cc2cacb  spidermonkey-v152.0.4-aistudio2api.1-linux-amd64.tar.gz
+b3c9539b8d8378d99f86b267e0e3d007dd01ff80acebf4f52f3e1d6ac04d9d00  spidermonkey-v152.0.4-aistudio2api.1-linux-arm64.tar.gz
+942a3b57b202f899d799cac678b7471d01d0b34714070f0810c18fca37ffd721  spidermonkey-v152.0.4-aistudio2api.1-windows-amd64.tar.gz

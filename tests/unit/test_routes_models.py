@@ -103,6 +103,7 @@ async def test_model_discovery_falls_back_to_auth_file_cookies(tmp_path, monkeyp
     mock_session = MagicMock()
     mock_session._auth_file = str(auth_file)
     mock_session.get_current_auth_user = MagicMock(return_value="0")
+    mock_session.get_current_tier = MagicMock(return_value="Free")
 
     # Mock HTTP 探测返回
     fake_http_models = [
@@ -113,6 +114,7 @@ async def test_model_discovery_falls_back_to_auth_file_cookies(tmp_path, monkeyp
         }
     ]
     service._fetch_via_http = AsyncMock(return_value=fake_http_models)
+    service._fetch_quota_models_via_http = AsyncMock()
 
     models = await service.get_models(session=mock_session, force_refresh=True)
     assert models == fake_http_models
@@ -120,6 +122,9 @@ async def test_model_discovery_falls_back_to_auth_file_cookies(tmp_path, monkeyp
     call_cookies, call_auth_user = service._fetch_via_http.call_args[0]
     assert call_cookies["SAPISID"] == "test_sapisid"
     assert call_auth_user == "0"
+    service._fetch_quota_models_via_http.assert_awaited_once_with(
+        call_cookies, call_auth_user, tier="Free"
+    )
 
 
 @pytest.mark.asyncio

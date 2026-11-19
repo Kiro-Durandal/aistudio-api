@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import socket
+
 import pytest
 
 _TEST_DEFAULT_CONFIG = """
@@ -130,6 +132,18 @@ account_presets:
     target_groups: ["production"]
     is_system: true
 """
+
+
+@pytest.fixture(autouse=True)
+def forbid_network(monkeypatch):
+    """Unit tests must use in-memory transports, never live Google services."""
+
+    def blocked(*_args, **_kwargs):
+        pytest.fail("Unit tests prohibit network access; mock the upstream client")
+
+    for method in ("connect", "connect_ex", "sendto"):
+        monkeypatch.setattr(socket.socket, method, blocked)
+    monkeypatch.setattr(socket, "getaddrinfo", blocked)
 
 
 @pytest.fixture(scope="session")

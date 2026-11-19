@@ -19,27 +19,23 @@
 `aistudio-api` 是 Google AI Studio 反向代理网关，提供原生 **Gemini API 兼容接口**（`/v1beta/...`）。
 
 - **Gemini 协议实现**：实现 Gemini 官方 `/v1beta/...` 接口规范（包含 thinking、multimodal、image-generation、function calling 等），不引入其他厂商的协议转译层。
-- **仅限本地 WAA 签名**：通过本机 `http://127.0.0.1:8081` 的独立 `waa-signer`（嵌入式 SpiderMonkey 152 + Firefox 152 DOM 宿主）生成 `!proof` 令牌。签名客户端禁止远程地址、重定向和环境代理；本地服务不可用时拒绝启动，不添加远程回退。Google 出口仍由 `AISTUDIO_PROXY` 配置。
+- **无浏览器 WAA 签名架构**：通过本地 `waa-signer` 子进程（嵌入式 SpiderMonkey 152 + Firefox 152 DOM 宿主）经 `stdin`/`stdout` 多路复用 NDJSON IPC 生成 `!proof` 令牌，配合 `httpx` HTTP/2 异步连接池直连 Google AI Studio。
 - **代码即事实标准（Code as Ground Truth）**：以通过测试验证的代码为准。当文档与代码逻辑不一致时，以代码为准并同步更新文档。
 - **接口契约优先（Contract over Brittle Mocks）**：测试应对齐公共接口契约，避免耦合私有属性。
 - **协议索引常量化（No Magic Numbers）**：Protobuf-over-JSON 数组下标统一定义为 `wire_spec.py` 中的具名常量或枚举。
 
 ## 2. 运行时与环境约束 (Termux)
 
-Python 工具链直接运行在 Termux 宿主（通过 `uv` 管理虚拟环境），通过纯 HTTP/2 与 WAA 证明接口完成全部签名与推理通信。
+Python 工具链直接运行在 Termux 宿主（通过 `uv` 管理虚拟环境），通过本地子进程管道完成 WAA 签名，HTTP/2 仅用于 Google 上游通信。本分支默认监听 `127.0.0.1`，本地签名器缺失或启动失败时拒绝启动；保留 `netresolve` 的 Termux DNS 支持，不添加公共签名节点回退。
 
 ### 2.1 环境准备与启动流程
 
 ```bash
-# 1. 宿主依赖环境配置与同步
-bash scripts/setup-env.sh
-uv sync
+# 一键初始化依赖并编译本地 waa-signer
+bash install.sh
 
-# 2. 编译本地签名器（Go 1.27+、Zig）
-bash waa-signer/build.sh
-
-# 3. 启动服务（默认只监听本机）
-uv run python3 main.py server --port 8080
+# 启动服务
+bash start.sh
 ```
 
 > [!NOTE]
@@ -135,7 +131,7 @@ uv run python3 main.py server --port 8080
    - 避免引入形式主义的胶水层、过度抽象与冗余样板代码，保持代码与文档紧凑精炼。
 7. **交付前全量审查完整 diff（Review Full Diff）**：
    - 每次提交或报告完成前，**必须完整查看整个 `git diff`（不带行数折叠与省略）**，逐行确认所有改动准确无误、没有残留调试代码或意外破损。
-   - 确保 `uv run ruff check .`、`bun x pyright` 和 `uv run pytest` 全部零报错通过后再行提交。
+   - 确保 `uv run ruff check .`、`uv tool run pyright src tests`、`uv run pytest` 和 `bash waa-signer/build.sh --test` 全部零报错通过后再行提交。
 8. **微创编辑优先与 Diff 审计守则（Prefer Edit & Mandatory Diff Inspection）**：
    - 局部功能调整或代码重构**一律优先使用精准微创的 `edit`**，避免全文件重写引入非预期的代码格式漂移与无关变动。
    - 仅在新建文件或结构彻底颠覆时使用 `write`。**使用 `write` 进行文件覆盖后，必须在第一时间执行 `git diff` 进行全量逐行审计**，确保无意外功能遗漏、截断或回退。
@@ -151,7 +147,7 @@ uv run python3 main.py server --port 8080
 |---|---|---|
 | **Python 代码风格与 Lint** | `uv run ruff check .` | 0 errors |
 | **Python 代码格式化** | `uv run ruff format --check .` | 全部文件已格式化 |
-| **Python 类型检查** | `bun x pyright src tests` | 0 errors（以根目录 `pyrightconfig.json` 为准） |
+| **Python 类型检查** | `uv tool run pyright src tests` | 0 errors（以根目录 `pyrightconfig.json` 为准） |
 | **Python 单元测试** | `uv run pytest` | 全部通过 |
 | **前端代码规范** | `cd web && bun run lint` | 0 errors, 0 warnings |
 | **前端类型检查** | `cd web && bun run type-check` | 0 errors |
@@ -210,15 +206,18 @@ aistudio-api/
 │   │   └── models.py              # 领域数据结构 (Candidate, ModelOutput 等)
 │   ├── infrastructure/            # 基础设施层
 │   │   ├── account/               # Cookie 解析、SAPISIDHASH 计算与凭据存储 (account_store, cookie_parser)
-│   │   ├── waa/                   # WAA 证明令牌签名客户端 (signer) 与本地守护进程管理 (daemon)
+│   │   ├── waa/                   # 本地 WAA IPC 证明客户端 (signer) 与子进程生命周期管理 (daemon)
 │   │   └── gateway/               # 会话管理 (session)、请求头大小写合并 (headers)、HTTP/2 传输层 (transport)、模型发现与默认规则 (model_discovery, model_defaults)、Wire 编解码与流式管道 (wire_spec, wire_types, wire_codec, wire_parser, stream_parser, streaming)
-├── waa-signer/                    # 独立 Go WAA 签名服务 (SpiderMonkey 152 + Firefox 152 DOM)
-│   ├── build.sh / build.bat / build.ps1 # 跨平台一键自动下载依赖与静态构建脚本
-│   ├── cmd/waa-signer/main.go     # HTTP 服务入口 (/health, /v1/proof/mint, /v1/rpc/send)
+├── waa-signer/                    # 本地 Go WAA IPC 签名器 (SpiderMonkey 152 + Firefox 152 DOM)
+│   ├── build.sh / build.bat / build.ps1 # 跨平台一键自动下载依赖与静态构建/测试脚本
+│   ├── cmd/waa-signer/main.go     # stdio NDJSON IPC 入口 (health, proof.mint, shutdown)
 │   └── internal/                  # WAA 解释器、SpiderMonkey CGO 绑定与网络栈
+├── install.sh / start.sh          # Unix (Termux / Linux / macOS) 统一安装编译与启动入口
+├── install.bat / start.bat        # Windows 统一安装编译与启动入口
 ├── scripts/
 │   ├── setup-env.sh               # Linux/Termux 环境自动检测与 TUR 源配置脚本
 │   ├── setup-env.ps1              # Windows PowerShell 环境初始化与依赖检查脚本
+│   ├── install.ps1                # Windows 统一安装编排脚本
 │   └── waa_vm_inspector.js        # WAA 虚拟机 AST 规格提取、五阶段符号反汇编与 Proof 解码 CLI 工具
 ├── docs/
 │   ├── ARCHITECTURE.md            # 系统整体分层架构与并发控制设计

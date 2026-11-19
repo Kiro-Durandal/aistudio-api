@@ -197,9 +197,6 @@ def resolve_timezone() -> str:
 class Settings:
     host: str = os.getenv("AISTUDIO_HOST", "127.0.0.1")
     port: int = int(os.getenv("AISTUDIO_PORT", "8080"))
-    proof_server_url: str = os.getenv(
-        "AISTUDIO_PROOF_SERVER_URL", "http://127.0.0.1:8081"
-    )
     auth_file: str | None = discover_auth_file()
     tmp_dir: str = os.getenv("AISTUDIO_TMP_DIR", tempfile.gettempdir())
     proxy_url: str | None = discover_proxy_url()

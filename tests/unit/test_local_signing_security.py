@@ -1,124 +1,210 @@
-"""Regression tests for the credential boundary around local proof signing."""
+"""IPC boundary and restart regressions using synthetic credentials only."""
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+import asyncio
+import json
+from unittest.mock import AsyncMock, MagicMock
 
-import httpx
 import pytest
 
 from aistudio_api.domain.errors import TransportError
 from aistudio_api.infrastructure.waa import daemon
-from aistudio_api.infrastructure.waa.signer import (
-    DEFAULT_PROOF_SERVER_URL,
-    RemoteProofSigner,
-)
+from aistudio_api.infrastructure.waa.signer import LocalIpcProofSigner
+
+
+class MemoryChild:
+    """Controllable pipe peer for process exit and concurrent restart scenarios."""
+
+    def __init__(self, *, hold_replies=False, wait_gate=None):
+        self.stdout = asyncio.StreamReader()
+        self.stderr = asyncio.StreamReader()
+        self.stdout.feed_data(b'{"id":0,"event":"ready","ok":true}\n')
+        self.pid = 12345
+        self.returncode = None
+        self.requests = []
+        self.request_received = asyncio.Event()
+        self.wait_started = asyncio.Event()
+        self.wait_gate = wait_gate
+        self.hold_replies = hold_replies
+        self.stdin = MagicMock()
+        self.stdin.write.side_effect = self.write
+        self.stdin.drain = AsyncMock()
+
+    def write(self, payload):
+        req = json.loads(payload)
+        self.requests.append(req)
+        if req["method"] != "shutdown":
+            self.request_received.set()
+            if not self.hold_replies:
+                self.reply(req["id"])
+
+    def reply(self, req_id):
+        self.stdout.feed_data(
+            (
+                json.dumps({"id": req_id, "ok": True, "proof": "!fixture"}) + "\n"
+            ).encode()
+        )
+
+    async def wait(self):
+        self.wait_started.set()
+        if self.wait_gate is not None:
+            await self.wait_gate.wait()
+        self.returncode = 0
+        self.stdout.feed_eof()
+        self.stderr.feed_eof()
+        return 0
+
+
+@pytest.fixture
+def signer_binary(tmp_path):
+    binary = tmp_path / "waa-signer"
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o700)
+    return binary
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "url",
-    [
-        "https://waa.spinsnow.fun",
-        "http://127.0.0.1:8081.example.com",
-        "http://127.0.0.1:8081@evil.example",
-        "http://evil.example/127.0.0.1:8081",
-        "http://localhost:8081",
-        "http://127.0.0.1:8082",
-        "https://127.0.0.1:8081",
-        "http://127.0.0.1:8081/path",
-        "http://127.0.0.1:8081?redirect=evil",
-        "http://127.0.0.1:8081#fragment",
-    ],
-)
-async def test_unsafe_target_is_rejected_even_with_cached_client(url: str):
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(200, json={"ok": True, "proof": "!unexpected"})
-
-    signer = RemoteProofSigner()
-    signer._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    # A live config edit must not reuse a cached client to bypass validation.
-    signer.server_url = url
+async def test_old_pipe_reader_cannot_fail_new_generation(monkeypatch, signer_binary):
+    first = MemoryChild()
+    second = MemoryChild(hold_replies=True)
+    launch = AsyncMock(side_effect=[first, second])
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", launch)
+    manager = daemon.LocalSignerProcess(signer_binary)
     try:
-        with pytest.raises(TransportError, match="只允许本地签名"):
-            await signer.mint_proof(cookies={"SID": "test-secret"}, prompt="private")
-        assert requests == []
+        await manager.health()
+        # The OS may report exit before buffered stdout has reached EOF.
+        first.returncode = 1
+        restarted = asyncio.create_task(manager.health())
+        await asyncio.wait_for(second.request_received.wait(), 1)
+        # Deliver EOF late, while the replacement already has a pending request.
+        first.stdout.feed_eof()
+        await asyncio.sleep(0)
+        second.reply(second.requests[0]["id"])
+        assert (await restarted)["ok"] is True
     finally:
-        await signer.close()
+        await manager.stop()
 
 
 @pytest.mark.asyncio
-async def test_local_signer_does_not_follow_redirect(monkeypatch):
-    requests: list[httpx.Request] = []
-    original_client = httpx.AsyncClient
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(307, headers={"Location": "https://evil.example/mint"})
-
-    def make_client(**kwargs):
-        assert kwargs["trust_env"] is False
-        assert kwargs["follow_redirects"] is False
-        return original_client(transport=httpx.MockTransport(handler), **kwargs)
-
-    monkeypatch.setenv("HTTP_PROXY", "http://evil.example:3128")
-    monkeypatch.setenv("HTTPS_PROXY", "http://evil.example:3128")
-    monkeypatch.setenv("ALL_PROXY", "http://evil.example:3128")
-    monkeypatch.setattr(httpx, "AsyncClient", make_client)
-    signer = RemoteProofSigner()
+async def test_stop_finishes_before_new_process_starts(monkeypatch, signer_binary):
+    gate = asyncio.Event()
+    first = MemoryChild(wait_gate=gate)
+    second = MemoryChild()
+    launch = AsyncMock(side_effect=[first, second])
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", launch)
+    manager = daemon.LocalSignerProcess(signer_binary)
+    await manager.health()
+    stopped = asyncio.create_task(manager.stop())
+    await first.wait_started.wait()
+    restarted = asyncio.create_task(manager.health())
     try:
-        with pytest.raises(TransportError, match="HTTP 307"):
-            await signer.mint_proof(cookies={"SID": "test-secret"}, prompt="private")
-        assert len(requests) == 1
-        assert str(requests[0].url) == f"{DEFAULT_PROOF_SERVER_URL}/v1/proof/mint"
+        # Give the competing coroutine a turn while old process.wait is blocked.
+        await asyncio.sleep(0)
+        assert launch.await_count == 1
+        gate.set()
+        await stopped
+        assert (await restarted)["ok"] is True
     finally:
-        await signer.close()
+        gate.set()
+        await asyncio.gather(stopped, restarted, return_exceptions=True)
+        await manager.stop()
 
 
-def test_missing_local_binary_stops_startup_without_changing_config(
+@pytest.mark.asyncio
+async def test_cancelled_and_timed_out_requests_do_not_break_health(
+    monkeypatch, signer_binary
+):
+    child = MemoryChild(hold_replies=True)
+    monkeypatch.setattr(
+        asyncio, "create_subprocess_exec", AsyncMock(return_value=child)
+    )
+    manager = daemon.LocalSignerProcess(signer_binary)
+    try:
+        pending = asyncio.create_task(
+            manager.request("proof.mint", {"cookies": "SID=fixture"})
+        )
+        await child.request_received.wait()
+        cancelled_id = child.requests[-1]["id"]
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        with pytest.raises(TransportError, match="超时"):
+            await manager.request("proof.mint", timeout=0.01)
+        # Stale replies must never satisfy a later request.
+        child.reply(cancelled_id)
+        child.reply(child.requests[-1]["id"])
+        child.hold_replies = False
+        assert (await manager.health())["ok"] is True
+    finally:
+        await manager.stop()
+
+
+@pytest.mark.asyncio
+async def test_timeout_also_bounds_a_blocked_pipe_write(monkeypatch, signer_binary):
+    child = MemoryChild(hold_replies=True)
+    blocked = asyncio.Event()
+    child.stdin.drain = blocked.wait
+    monkeypatch.setattr(
+        asyncio, "create_subprocess_exec", AsyncMock(return_value=child)
+    )
+    manager = daemon.LocalSignerProcess(signer_binary)
+    try:
+        with pytest.raises(TransportError, match="超时"):
+            await asyncio.wait_for(manager.request("proof.mint", timeout=0.01), 0.5)
+        blocked.set()
+        child.hold_replies = False
+        assert (await manager.health())["ok"] is True
+    finally:
+        blocked.set()
+        await manager.stop()
+
+
+@pytest.mark.asyncio
+async def test_missing_local_binary_stops_startup_without_changing_config(
     monkeypatch, tmp_path
 ):
     config_path = tmp_path / "config.yaml"
-    config_path.write_text("waa:\n  active_server: local_spidermonkey\n")
-    before = config_path.read_text()
+    config_path.write_text("api_keys: [fixture]\nwaa:\n  active_server: old_node\n")
+    before = config_path.read_bytes()
     monkeypatch.setattr(daemon, "_repo_root", lambda: tmp_path)
-    monkeypatch.setattr(
-        daemon, "get_active_waa_server", lambda: {"url": DEFAULT_PROOF_SERVER_URL}
-    )
-    monkeypatch.setattr(daemon, "is_service_healthy", lambda _url: False)
-
-    with pytest.raises(RuntimeError, match="已禁止远程回退"):
-        daemon.ensure_signer_ready()
-    assert config_path.read_text() == before
+    with pytest.raises(TransportError, match="未检测到本地"):
+        await daemon.ensure_signer_ready()
+    assert config_path.read_bytes() == before
 
 
-def test_remote_configuration_is_rejected_before_health_probe(monkeypatch):
-    probe = MagicMock()
-    monkeypatch.setattr(
-        daemon, "get_active_waa_server", lambda: {"url": "https://waa.spinsnow.fun"}
-    )
-    monkeypatch.setattr(daemon, "is_service_healthy", probe)
-    with pytest.raises(TransportError, match="只允许本地签名"):
-        daemon.ensure_signer_ready()
-    probe.assert_not_called()
+@pytest.mark.asyncio
+async def test_failed_local_process_stops_startup(monkeypatch, signer_binary):
+    manager = daemon.LocalSignerProcess(signer_binary)
+    monkeypatch.setattr(daemon, "is_signer_binary_ready", lambda: True)
+    monkeypatch.setattr(daemon, "get_signer_process", lambda: manager)
+    launch = AsyncMock(side_effect=OSError("fixture exec failure"))
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", launch)
+    with pytest.raises(TransportError, match="启动失败"):
+        await daemon.ensure_signer_ready()
+    launch.assert_awaited_once()
+    assert not manager.is_running
 
 
-def test_failed_local_process_stops_startup(monkeypatch, tmp_path):
-    binary = tmp_path / "waa-signer" / "bin" / "waa-signer"
-    binary.parent.mkdir(parents=True)
-    binary.write_text("not executed")
-    binary.chmod(0o700)
-    monkeypatch.setattr(daemon, "_repo_root", lambda: tmp_path)
-    monkeypatch.setattr(
-        daemon, "get_active_waa_server", lambda: {"url": DEFAULT_PROOF_SERVER_URL}
-    )
-    monkeypatch.setattr(daemon, "is_service_healthy", lambda _url: False)
-    monkeypatch.setattr(daemon.sys, "platform", "linux")
-    launch = MagicMock(side_effect=OSError("cannot start signer"))
-    monkeypatch.setattr(daemon.subprocess, "Popen", launch)
-    with pytest.raises(RuntimeError, match="已禁止远程回退"):
-        daemon.ensure_signer_ready()
-    launch.assert_called_once()
+@pytest.mark.asyncio
+async def test_legacy_remote_url_and_proxy_cannot_redirect_signing(
+    monkeypatch, signer_binary
+):
+    import httpx
+
+    monkeypatch.setenv("AISTUDIO_PROOF_SERVER_URL", "https://untrusted.example")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:3128")
+    http_client = MagicMock(side_effect=AssertionError("signing must use child pipes"))
+    monkeypatch.setattr(httpx, "AsyncClient", http_client)
+    child = MemoryChild()
+    launch = AsyncMock(return_value=child)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", launch)
+    manager = daemon.LocalSignerProcess(signer_binary)
+    signer = LocalIpcProofSigner(process=manager)
+    try:
+        assert await signer.mint_proof(cookies={"SAPISID": "fixture"}) == "!fixture"
+        assert child.requests[0]["method"] == "proof.mint"
+        assert "https://untrusted.example" not in launch.call_args.args
+        http_client.assert_not_called()
+    finally:
+        await manager.stop()
